@@ -1,5 +1,26 @@
 {
   "name": "trading-lab",
   "private": true,
-  "workspaces": []
+  "workspaces": [],
+  "version": "1.0.0",
+  "description": "A modular trading bot platform organized into distinct layers for maintainability and scalability.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dklish/trading-lab.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Dklish/trading-lab/issues"
+  },
+  "homepage": "https://github.com/Dklish/trading-lab#readme"
 }
