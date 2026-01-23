@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import Navigation from "./components/Navigation";
 
 export const metadata: Metadata = {
   title: "Trading Lab",
@@ -13,7 +14,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body style={{ margin: 0, fontFamily: "system-ui, sans-serif" }}>
+        <div style={{ minHeight: "100vh", backgroundColor: "#fff" }}>
+          <Navigation />
+          {children}
+        </div>
+      </body>
     </html>
   );
 }

@@ -18,14 +18,53 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 // Initialize exchanges (public, no API keys needed)
-const exchanges = [
-  new ccxt.binance({ enableRateLimit: true }),
-  new ccxt.coinbase({ enableRateLimit: true }),
-  new ccxt.kraken({ enableRateLimit: true }),
+// Removed Binance by default due to frequent 451 blocks
+const coinbaseExchange = new ccxt.coinbase({ enableRateLimit: true });
+const krakenExchange = new ccxt.kraken({ enableRateLimit: true });
+
+// Exchange configuration with timeouts
+const exchangeConfigs = [
+  { exchange: coinbaseExchange, name: "coinbase", timeout: 2000 },
+  { exchange: krakenExchange, name: "kraken", timeout: 6000 }, // Increased timeout for Kraken
 ];
 
 // Symbols to fetch
 const symbols = ["BTC/USDT", "ETH/USDT"];
+
+// Kraken cache with TTL (10 seconds)
+interface CachedMarket {
+  data: Array<{
+    exchange: string;
+    symbol: string;
+    bid: number;
+    ask: number;
+    ts: number;
+  }>;
+  timestamp: number;
+}
+
+let krakenCache: CachedMarket | null = null;
+const KRAKEN_CACHE_TTL = 10000; // 10 seconds
+const KRAKEN_POLL_INTERVAL = 10000; // Poll Kraken every 10 seconds
+
+// Rate-limited logging
+const logThrottle: Map<string, number> = new Map();
+const LOG_THROTTLE_MS = 30000; // Only log same error once per 30 seconds
+
+function rateLimitedLog(level: "error" | "warn", message: string, ...args: any[]) {
+  const key = `${level}:${message}`;
+  const now = Date.now();
+  const lastLog = logThrottle.get(key);
+  
+  if (!lastLog || now - lastLog > LOG_THROTTLE_MS) {
+    logThrottle.set(key, now);
+    if (level === "error") {
+      console.error(message, ...args);
+    } else {
+      console.warn(message, ...args);
+    }
+  }
+}
 
 // Normalize ticker data
 function normalizeTicker(exchange: string, symbol: string, ticker: any): {
@@ -48,6 +87,68 @@ function normalizeTicker(exchange: string, symbol: string, ticker: any): {
   };
 }
 
+// Helper to add timeout to a promise
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, exchangeName: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${exchangeName} request timeout after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+}
+
+// Fetch Kraken data (used for background polling)
+async function fetchKrakenData(): Promise<Array<{
+  exchange: string;
+  symbol: string;
+  bid: number;
+  ask: number;
+  ts: number;
+}>> {
+  const results: Array<{
+    exchange: string;
+    symbol: string;
+    bid: number;
+    ask: number;
+    ts: number;
+  }> = [];
+
+  const symbolPromises = symbols.map(async (symbol) => {
+    try {
+      const tickerPromise = krakenExchange.fetchTicker(symbol);
+      const ticker = await withTimeout(tickerPromise, 6000, "kraken");
+      const normalized = normalizeTicker("kraken", symbol, ticker);
+      if (normalized) {
+        results.push(normalized);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      rateLimitedLog("error", `Failed to fetch ${symbol} from kraken:`, errorMsg);
+    }
+  });
+
+  await Promise.allSettled(symbolPromises);
+  return results;
+}
+
+// Background polling for Kraken (updates cache every 10 seconds)
+async function pollKraken() {
+  try {
+    const data = await fetchKrakenData();
+    krakenCache = {
+      data,
+      timestamp: Date.now(),
+    };
+  } catch (error) {
+    rateLimitedLog("error", "Kraken background poll failed:", error);
+  }
+}
+
+// Start background polling for Kraken
+setInterval(pollKraken, KRAKEN_POLL_INTERVAL);
+// Initial poll
+pollKraken();
+
 // GET /markets endpoint
 app.get("/markets", async (req, res) => {
   const markets: Array<{
@@ -57,47 +158,98 @@ app.get("/markets", async (req, res) => {
     ask: number;
     ts: number;
   }> = [];
+  const errors: Array<{
+    exchange: string;
+    error: string;
+  }> = [];
 
-  // Fetch from all exchanges in parallel
-  const promises = exchanges.map(async (exchange) => {
-    const exchangeName = exchange.id;
-    const results: Array<{
-      exchange: string;
-      symbol: string;
-      bid: number;
-      ask: number;
-      ts: number;
-    }> = [];
+  // Use cached Kraken data if available and fresh
+  const now = Date.now();
+  if (krakenCache && (now - krakenCache.timestamp) < KRAKEN_CACHE_TTL) {
+    markets.push(...krakenCache.data);
+  }
 
-    for (const symbol of symbols) {
-      try {
-        const ticker = await exchange.fetchTicker(symbol);
-        const normalized = normalizeTicker(exchangeName, symbol, ticker);
-        if (normalized) {
-          results.push(normalized);
+  // Fetch from fast exchanges (Coinbase) in parallel
+  const fastExchangePromises = exchangeConfigs
+    .filter(config => config.name !== "kraken") // Skip Kraken - use cache instead
+    .map(async (config) => {
+      const { exchange, name, timeout } = config;
+      const results: Array<{
+        exchange: string;
+        symbol: string;
+        bid: number;
+        ask: number;
+        ts: number;
+      }> = [];
+
+      // Fetch all symbols for this exchange with timeout
+      const symbolPromises = symbols.map(async (symbol) => {
+        try {
+          const tickerPromise = exchange.fetchTicker(symbol);
+          const ticker = await withTimeout(tickerPromise, timeout, name);
+          const normalized = normalizeTicker(name, symbol, ticker);
+          if (normalized) {
+            results.push(normalized);
+          }
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          rateLimitedLog("error", `Failed to fetch ${symbol} from ${name}:`, errorMsg);
         }
-      } catch (error) {
-        // Skip symbols that don't exist on this exchange
-        console.error(`Failed to fetch ${symbol} from ${exchangeName}:`, error instanceof Error ? error.message : error);
-      }
-    }
+      });
 
-    return results;
+      await Promise.allSettled(symbolPromises);
+      return { exchangeName: name, results };
+    });
+
+  // Wait for fast exchanges with overall timeout (max 2 seconds total)
+  const overallTimeout = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error("Overall request timeout")), 2000);
   });
 
-  // Wait for all exchanges, even if some fail
-  const allResults = await Promise.allSettled(promises);
+  try {
+    const allResults = await Promise.race([
+      Promise.allSettled(fastExchangePromises),
+      overallTimeout,
+    ]);
 
-  // Collect successful results
-  allResults.forEach((result) => {
-    if (result.status === "fulfilled") {
-      markets.push(...result.value);
-    } else {
-      console.error("Exchange fetch failed:", result.reason);
+    // Collect successful results and errors
+    if (Array.isArray(allResults)) {
+      allResults.forEach((result) => {
+        if (result.status === "fulfilled") {
+          markets.push(...result.value.results);
+        } else {
+          const errorMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+          errors.push({
+            exchange: "unknown",
+            error: errorMsg,
+          });
+          rateLimitedLog("error", "Exchange fetch failed:", result.reason);
+        }
+      });
     }
-  });
+  } catch (error) {
+    // Overall timeout or other error
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    errors.push({
+      exchange: "system",
+      error: errorMsg,
+    });
+    rateLimitedLog("error", "Overall fetch error:", error);
+  }
 
-  res.json(markets);
+  // If Kraken cache is stale or missing, add error (but don't block response)
+  if (!krakenCache || (now - krakenCache.timestamp) >= KRAKEN_CACHE_TTL) {
+    errors.push({
+      exchange: "kraken",
+      error: "Kraken data temporarily unavailable (using cached data or polling)",
+    });
+  }
+
+  // Always return within 1-2 seconds with partial results
+  res.json({
+    markets,
+    errors: errors.length > 0 ? errors : undefined,
+  });
 });
 
 app.listen(PORT, () => {

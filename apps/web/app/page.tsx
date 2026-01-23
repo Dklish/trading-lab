@@ -1,128 +1,104 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
-interface Market {
-  exchange: string;
-  symbol: string;
-  bid: number;
-  ask: number;
-  ts: number;
-}
+import { useState, useMemo, useEffect } from "react";
+import { useMarketsPoll, MarketRow } from "./hooks/useMarketsPoll";
+import DashboardHeader from "./components/DashboardHeader";
+import SummaryCards from "./components/SummaryCards";
+import MarketsTable from "./components/MarketsTable";
+import { useRouter } from "next/navigation";
 
 export default function Home() {
-  const [markets, setMarkets] = useState<Market[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { rows, errors, status, lastUpdated } = useMarketsPoll(2000);
+  const [filteredRows, setFilteredRows] = useState<MarketRow[]>(rows);
+  const router = useRouter();
 
-  const fetchMarkets = async () => {
-    try {
-      const res = await fetch("http://localhost:4000/markets");
-      
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
-      
-      const data = await res.json();
-      
-      if (Array.isArray(data)) {
-        setMarkets(data);
-        setError(null);
-      } else {
-        throw new Error("Invalid response format: expected an array");
-      }
-      
-      setLoading(false);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to fetch market data";
-      setError(errorMessage);
-      setLoading(false);
-      console.error("Failed to fetch markets:", err);
-    }
-  };
-
+  // Update filtered rows when rows change
   useEffect(() => {
-    fetchMarkets();
-    const interval = setInterval(fetchMarkets, 2000);
-    return () => clearInterval(interval);
-  }, []);
+    setFilteredRows(rows);
+  }, [rows]);
 
-  const calculateSpread = (bid: number, ask: number) => {
-    return ask - bid;
-  };
+  // Find top movers (best spreads)
+  const topMovers = useMemo(() => {
+    const spreads = rows.map(row => ({
+      row,
+      spread: row.ask - row.bid,
+      spreadPercent: ((row.ask - row.bid) / row.bid) * 100,
+    })).sort((a, b) => a.spreadPercent - b.spreadPercent).slice(0, 5);
+    
+    return spreads;
+  }, [rows]);
 
-  const formatTimestamp = (ts: number) => {
-    return new Date(ts).toLocaleTimeString();
+  // Find best execution opportunities (lowest spread)
+  const bestExecution = useMemo(() => {
+    const bySymbol = new Map<string, MarketRow & { spread: number; spreadPercent: number }>();
+    
+    rows.forEach(row => {
+      const spread = row.ask - row.bid;
+      const spreadPercent = (spread / row.bid) * 100;
+      const existing = bySymbol.get(row.symbol);
+      
+      if (!existing || spreadPercent < existing.spreadPercent) {
+        bySymbol.set(row.symbol, { ...row, spread, spreadPercent });
+      }
+    });
+    
+    return Array.from(bySymbol.values()).sort((a, b) => a.spreadPercent - b.spreadPercent);
+  }, [rows]);
+
+  const handleRowClick = (row: MarketRow) => {
+    router.push(`/markets/${row.symbol}`);
   };
 
   return (
-    <main style={{ minHeight: "100vh", padding: "32px", fontFamily: "system-ui, sans-serif" }}>
-      <div style={{ maxWidth: "1200px", margin: "0 auto" }}>
-        <h1 style={{ fontSize: "28px", fontWeight: "bold", marginBottom: "24px", color: "#000" }}>
-          Trading Lab Dashboard
-        </h1>
+    <main className="min-h-screen bg-gray-50 p-8">
+      <div className="max-w-7xl mx-auto">
+        <DashboardHeader status={status} lastUpdated={lastUpdated} errors={errors} />
         
-        {error ? (
-          <div style={{ 
-            padding: "16px", 
-            backgroundColor: "#fee", 
-            border: "1px solid #fcc", 
-            borderRadius: "4px",
-            color: "#c00",
-            marginBottom: "16px"
-          }}>
-            <strong>Error:</strong> {error}
+        {status === "loading" && rows.length === 0 ? (
+          <div className="text-center py-12">
+            <p className="text-gray-600">Loading market data...</p>
           </div>
-        ) : null}
-        
-        {loading && markets.length === 0 ? (
-          <p>Loading market data...</p>
-        ) : markets.length === 0 ? (
-          <p>No market data available</p>
+        ) : status === "error" && rows.length === 0 ? (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+            <p className="text-red-800">
+              <strong>Error:</strong> {errors.join(", ")}
+            </p>
+          </div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ 
-              width: "100%", 
-              borderCollapse: "collapse", 
-              border: "1px solid #ddd" 
-            }}>
-              <thead>
-                <tr style={{ backgroundColor: "#f5f5f5" }}>
-                  <th style={{ border: "1px solid #ddd", padding: "12px", textAlign: "left", fontWeight: "bold", color: "#000" }}>Exchange</th>
-                  <th style={{ border: "1px solid #ddd", padding: "12px", textAlign: "left", fontWeight: "bold", color: "#000" }}>Symbol</th>
-                  <th style={{ border: "1px solid #ddd", padding: "12px", textAlign: "right", fontWeight: "bold", color: "#000" }}>Bid</th>
-                  <th style={{ border: "1px solid #ddd", padding: "12px", textAlign: "right", fontWeight: "bold", color: "#000" }}>Ask</th>
-                  <th style={{ border: "1px solid #ddd", padding: "12px", textAlign: "right", fontWeight: "bold", color: "#000" }}>Spread</th>
-                  <th style={{ border: "1px solid #ddd", padding: "12px", textAlign: "left", fontWeight: "bold", color: "#000" }}>Last Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {markets.map((market, index) => (
-                  <tr 
-                    key={`${market.exchange}-${market.symbol}-${index}`}
-                    style={{ 
-                      backgroundColor: index % 2 === 0 ? "#fff" : "#f9f9f9"
-                    }}
-                  >
-                    <td style={{ border: "1px solid #ddd", padding: "12px", color: "#000" }}>{market.exchange}</td>
-                    <td style={{ border: "1px solid #ddd", padding: "12px", fontFamily: "monospace", color: "#000" }}>{market.symbol}</td>
-                    <td style={{ border: "1px solid #ddd", padding: "12px", textAlign: "right", fontFamily: "monospace", color: "#000" }}>
-                      {market.bid.toFixed(2)}
-                    </td>
-                    <td style={{ border: "1px solid #ddd", padding: "12px", textAlign: "right", fontFamily: "monospace", color: "#000" }}>
-                      {market.ask.toFixed(2)}
-                    </td>
-                    <td style={{ border: "1px solid #ddd", padding: "12px", textAlign: "right", fontFamily: "monospace", color: "#000" }}>
-                      {calculateSpread(market.bid, market.ask).toFixed(2)}
-                    </td>
-                    <td style={{ border: "1px solid #ddd", padding: "12px", color: "#000" }}>
-                      {formatTimestamp(market.ts)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <SummaryCards rows={rows} />
+            
+            <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6 shadow-sm">
+              <h2 className="text-xl font-bold text-gray-900 mb-4">Best Execution Opportunities</h2>
+              {bestExecution.length > 0 ? (
+                <div className="space-y-2">
+                  {bestExecution.map((item, idx) => (
+                    <div key={`${item.exchange}-${item.symbol}-${idx}`} className="flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-200">
+                      <div>
+                        <span className="font-mono font-semibold text-gray-900">{item.symbol}</span>
+                        <span className="text-sm text-gray-600 ml-2">on {item.exchange}</span>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-mono text-sm text-gray-900">
+                          Spread: ${item.spread.toFixed(2)} ({item.spreadPercent.toFixed(4)}%)
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          Bid: ${item.bid.toFixed(2)} | Ask: ${item.ask.toFixed(2)}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-gray-500">No execution opportunities available</p>
+              )}
+            </div>
+
+            <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+              <h2 className="text-xl font-bold text-gray-900 mb-4">All Markets</h2>
+              <MarketsTable rows={filteredRows} onRowClick={handleRowClick} />
+            </div>
+          </>
         )}
       </div>
     </main>

@@ -9,8 +9,8 @@
     "doc": "docs"
   },
   "scripts": {
-    "dev": "concurrently \"npm --workspace=@trading-lab/api run dev\" \"npm --workspace=@trading-lab/web run dev\"",
-    "test": "echo \"Error: no test specified\" && exit 1"
+     "dev": "concurrently -n API,WEB \"cd apps/api && npm run dev\" \"cd apps/web && npm run dev\"",
+     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
