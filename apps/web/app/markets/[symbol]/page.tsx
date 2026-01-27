@@ -3,14 +3,7 @@
 import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-
-interface Market {
-  exchange: string;
-  symbol: string;
-  bid: number;
-  ask: number;
-  ts: number;
-}
+import { useMarketsWS, MarketRow } from "../../hooks/useMarketsWS";
 
 interface ExchangeData {
   exchange: string;
@@ -26,50 +19,26 @@ interface ExchangeData {
 export default function CoinDetailPage() {
   const params = useParams();
   const symbol = params.symbol as string;
-  const [markets, setMarkets] = useState<Market[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [previousMarkets, setPreviousMarkets] = useState<Market[]>([]);
+  const { rows, status, errors } = useMarketsWS();
+  const [previousMarkets, setPreviousMarkets] = useState<MarketRow[]>([]);
 
-  const fetchMarkets = async () => {
-    try {
-      const res = await fetch("/api/markets", {
-        cache: "no-store",
-      });
-      
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        const errorMessage = errorData.error || `HTTP error! status: ${res.status}`;
-        setError(errorMessage);
-        setLoading(false);
-        return;
-      }
-      
-      const data = await res.json();
-      
-      if (Array.isArray(data)) {
-        setPreviousMarkets(markets.length > 0 ? markets : data);
-        // Filter to only the selected symbol
-        const filtered = data.filter((m: Market) => m.symbol === symbol);
-        setMarkets(filtered);
-        setError(null);
-        setLoading(false);
-      } else {
-        throw new Error("Invalid response format: expected an array");
-      }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to fetch market data";
-      setError(errorMessage);
-      setLoading(false);
-      console.error("Failed to fetch markets:", err);
-    }
-  };
+  // Filter to only the selected symbol
+  const markets = useMemo(() => {
+    return rows.filter((m) => m.symbol === symbol);
+  }, [rows, symbol]);
 
+  // Track previous markets for price comparison
   useEffect(() => {
-    fetchMarkets();
-    const interval = setInterval(fetchMarkets, 2000);
-    return () => clearInterval(interval);
-  }, [symbol]);
+    if (markets.length > 0) {
+      setPreviousMarkets((prev) => {
+        if (prev.length === 0) return markets;
+        return prev;
+      });
+    }
+  }, [markets]);
+
+  const error = errors.length > 0 ? errors.join(", ") : null;
+  const loading = status === "connecting" && markets.length === 0;
 
   // Group by exchange and track previous values
   const exchangeData = useMemo(() => {
@@ -151,8 +120,10 @@ export default function CoinDetailPage() {
         </div>
       ) : null}
       
-      {loading && markets.length === 0 && !error ? (
-        <p>Loading market data...</p>
+      {status === "connecting" && markets.length === 0 && !error ? (
+        <p>Connecting to market data stream...</p>
+      ) : status === "disconnected" && markets.length === 0 ? (
+        <p>Disconnected. Reconnecting...</p>
       ) : error ? (
         <div style={{ 
           padding: "16px", 

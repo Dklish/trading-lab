@@ -1,14 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useMarketsPoll, MarketRow } from "../hooks/useMarketsPoll";
+import { useMarketsWS, MarketRow } from "../hooks/useMarketsWS";
 import DashboardHeader from "../components/DashboardHeader";
 import MarketFilters from "../components/MarketFilters";
 import MarketsTable from "../components/MarketsTable";
 import { useRouter } from "next/navigation";
 
 export default function MarketsPage() {
-  const { rows, errors, status, lastUpdated } = useMarketsPoll(2000);
+  const { rows, errors, status, lastUpdated } = useMarketsWS();
   const [filteredRows, setFilteredRows] = useState<MarketRow[]>(rows);
   const router = useRouter();
 
@@ -26,9 +26,9 @@ export default function MarketsPage() {
       <div className="max-w-7xl mx-auto">
         <DashboardHeader status={status} lastUpdated={lastUpdated} errors={errors} />
         
-        {status === "loading" && rows.length === 0 ? (
+        {status === "connecting" && rows.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-gray-600">Loading market data...</p>
+            <p className="text-gray-600">Connecting to market data stream...</p>
           </div>
         ) : status === "error" && rows.length === 0 ? (
           <div className="bg-red-50 border border-red-200 rounded-lg p-6">

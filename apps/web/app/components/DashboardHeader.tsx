@@ -1,6 +1,6 @@
 "use client";
 
-import { MarketStatus } from "../hooks/useMarketsPoll";
+type MarketStatus = "connecting" | "live" | "disconnected" | "error" | "loading" | "stale";
 
 interface DashboardHeaderProps {
   status: MarketStatus;
@@ -13,6 +13,10 @@ export default function DashboardHeader({ status, lastUpdated, errors }: Dashboa
     switch (status) {
       case "live":
         return { text: "Live", color: "bg-green-100 text-green-800" };
+      case "connecting":
+        return { text: "Connecting", color: "bg-blue-100 text-blue-800" };
+      case "disconnected":
+        return { text: "Disconnected", color: "bg-yellow-100 text-yellow-800" };
       case "stale":
         return { text: "Stale", color: "bg-yellow-100 text-yellow-800" };
       case "error":

@@ -1,8 +1,11 @@
 import express from "express";
 import ccxt from "ccxt";
+import { WebSocketServer, WebSocket } from "ws";
+import { createServer } from "http";
 
 const app = express();
 const PORT = 4000;
+const server = createServer(app);
 
 // Enable CORS for all routes
 app.use((req, res, next) => {
@@ -149,8 +152,57 @@ setInterval(pollKraken, KRAKEN_POLL_INTERVAL);
 // Initial poll
 pollKraken();
 
-// GET /markets endpoint
-app.get("/markets", async (req, res) => {
+// WebSocket server setup
+const wss = new WebSocketServer({ server, path: "/ws" });
+const clients = new Set<WebSocket>();
+
+// Store latest market data for snapshot
+let latestMarkets: Array<{
+  exchange: string;
+  symbol: string;
+  bid: number;
+  ask: number;
+  ts: number;
+}> = [];
+
+// Broadcast function to send data to all connected clients
+function broadcast(data: { type: string; data: any }) {
+  const message = JSON.stringify(data);
+  const deadClients: WebSocket[] = [];
+  
+  clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.send(message);
+      } catch (error) {
+        rateLimitedLog("error", "Failed to send WebSocket message:", error);
+        deadClients.push(client);
+      }
+    } else {
+      deadClients.push(client);
+    }
+  });
+  
+  // Clean up dead clients
+  deadClients.forEach((client) => {
+    clients.delete(client);
+  });
+}
+
+// Fetch all markets (reusable function)
+async function fetchAllMarkets(): Promise<{
+  markets: Array<{
+    exchange: string;
+    symbol: string;
+    bid: number;
+    ask: number;
+    ts: number;
+  }>;
+  errors: Array<{
+    exchange: string;
+    error: string;
+  }>;
+}> {
   const markets: Array<{
     exchange: string;
     symbol: string;
@@ -245,6 +297,90 @@ app.get("/markets", async (req, res) => {
     });
   }
 
+  return { markets, errors };
+}
+
+// WebSocket connection handling
+wss.on("connection", (ws: WebSocket) => {
+  clients.add(ws);
+  console.log(`WebSocket client connected. Total clients: ${clients.size}`);
+
+  // Send initial snapshot if available
+  if (latestMarkets.length > 0) {
+    try {
+      ws.send(JSON.stringify({ type: "snapshot", data: latestMarkets }));
+    } catch (error) {
+      rateLimitedLog("error", "Failed to send initial snapshot:", error);
+    }
+  }
+
+  // Handle client disconnect
+  ws.on("close", () => {
+    clients.delete(ws);
+    console.log(`WebSocket client disconnected. Total clients: ${clients.size}`);
+  });
+
+  // Handle errors
+  ws.on("error", (error) => {
+    rateLimitedLog("error", "WebSocket error:", error);
+    clients.delete(ws);
+  });
+
+  // Handle pong response for heartbeat
+  ws.on("pong", () => {
+    // Client is alive, no action needed
+  });
+});
+
+// Heartbeat: ping clients every 30 seconds and terminate dead connections
+setInterval(() => {
+  const deadClients: WebSocket[] = [];
+  
+  clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      try {
+        client.ping();
+      } catch (error) {
+        rateLimitedLog("error", "Failed to ping client:", error);
+        deadClients.push(client);
+      }
+    } else {
+      deadClients.push(client);
+    }
+  });
+  
+  // Clean up dead clients
+  deadClients.forEach((client) => {
+    clients.delete(client);
+  });
+}, 30000);
+
+// Poll markets and broadcast updates every 2 seconds
+async function pollAndBroadcastMarkets() {
+  try {
+    const { markets, errors } = await fetchAllMarkets();
+    
+    // Update latest markets for snapshot
+    latestMarkets = markets;
+    
+    // Broadcast tick to all connected clients
+    if (markets.length > 0) {
+      broadcast({ type: "tick", data: markets });
+    }
+  } catch (error) {
+    rateLimitedLog("error", "Failed to poll and broadcast markets:", error);
+  }
+}
+
+// Start polling and broadcasting every 2 seconds
+setInterval(pollAndBroadcastMarkets, 2000);
+// Initial poll
+pollAndBroadcastMarkets();
+
+// GET /markets endpoint (kept as fallback)
+app.get("/markets", async (req, res) => {
+  const { markets, errors } = await fetchAllMarkets();
+  
   // Always return within 1-2 seconds with partial results
   res.json({
     markets,
@@ -252,6 +388,7 @@ app.get("/markets", async (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`WebSocket server available at ws://localhost:${PORT}/ws`);
 });

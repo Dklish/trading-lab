@@ -10,11 +10,13 @@
   },
   "dependencies": {
     "express": "^4.22.1",
-    "ccxt": "^4.2.25"
+    "ccxt": "^4.2.25",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.25",
     "@types/node": "^20.19.30",
+    "@types/ws": "^8.5.13",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3"
   },

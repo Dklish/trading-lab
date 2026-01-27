@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { MarketRow } from "../hooks/useMarketsPoll";
+import { MarketRow } from "../hooks/useMarketsWS";
 
 type SortColumn = "exchange" | "symbol" | "bid" | "ask" | "spread" | "spreadPercent" | "age";
 type SortDirection = "asc" | "desc";
