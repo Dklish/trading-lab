@@ -32,6 +32,9 @@ export default function Navigation() {
         <Link href="/markets" style={navLinkStyle("/markets")}>
           Markets
         </Link>
+        <Link href="/trade" style={navLinkStyle("/trade")}>
+          Trade
+        </Link>
       </div>
     </nav>
   );

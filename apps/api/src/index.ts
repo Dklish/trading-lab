@@ -1,11 +1,29 @@
 import express from "express";
-import ccxt from "ccxt";
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer } from "http";
 
+console.log("boot");
 const app = express();
+console.log("created express app");
 const PORT = 4000;
 const server = createServer(app);
+console.log("created http server");
+
+// Defer ccxt import until after server is listening (it's heavy and can block startup)
+let coinbaseExchange: any;
+let krakenExchange: any;
+let exchangeConfigs: { exchange: any; name: string; timeout: number }[] = [];
+
+async function initExchanges() {
+  const ccxt = await import("ccxt");
+  coinbaseExchange = new ccxt.coinbase({ enableRateLimit: true });
+  krakenExchange = new ccxt.kraken({ enableRateLimit: true });
+  exchangeConfigs.length = 0;
+  exchangeConfigs.push(
+    { exchange: coinbaseExchange, name: "coinbase", timeout: 2000 },
+    { exchange: krakenExchange, name: "kraken", timeout: 6000 }
+  );
+}
 
 // Enable CORS for all routes
 app.use((req, res, next) => {
@@ -19,17 +37,6 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
-
-// Initialize exchanges (public, no API keys needed)
-// Removed Binance by default due to frequent 451 blocks
-const coinbaseExchange = new ccxt.coinbase({ enableRateLimit: true });
-const krakenExchange = new ccxt.kraken({ enableRateLimit: true });
-
-// Exchange configuration with timeouts
-const exchangeConfigs = [
-  { exchange: coinbaseExchange, name: "coinbase", timeout: 2000 },
-  { exchange: krakenExchange, name: "kraken", timeout: 6000 }, // Increased timeout for Kraken
-];
 
 // Symbols to fetch
 const symbols = ["BTC/USDT", "ETH/USDT"];
@@ -101,13 +108,11 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, exchangeName: st
 }
 
 // Fetch Kraken data (used for background polling)
-async function fetchKrakenData(): Promise<Array<{
-  exchange: string;
-  symbol: string;
-  bid: number;
-  ask: number;
-  ts: number;
-}>> {
+async function fetchKrakenData(): Promise<
+  Array<{ exchange: string; symbol: string; bid: number; ask: number; ts: number }>
+> {
+  if (!krakenExchange) return [];
+
   const results: Array<{
     exchange: string;
     symbol: string;
@@ -147,13 +152,9 @@ async function pollKraken() {
   }
 }
 
-// Start background polling for Kraken
-setInterval(pollKraken, KRAKEN_POLL_INTERVAL);
-// Initial poll
-pollKraken();
-
 // WebSocket server setup
 const wss = new WebSocketServer({ server, path: "/ws" });
+console.log("attached ws");
 const clients = new Set<WebSocket>();
 
 // Store latest market data for snapshot
@@ -372,11 +373,6 @@ async function pollAndBroadcastMarkets() {
   }
 }
 
-// Start polling and broadcasting every 2 seconds
-setInterval(pollAndBroadcastMarkets, 2000);
-// Initial poll
-pollAndBroadcastMarkets();
-
 // GET /markets endpoint (kept as fallback)
 app.get("/markets", async (req, res) => {
   const { markets, errors } = await fetchAllMarkets();
@@ -389,6 +385,16 @@ app.get("/markets", async (req, res) => {
 });
 
 server.listen(PORT, () => {
+  console.log("listening");
   console.log(`Server is running on http://localhost:${PORT}`);
   console.log(`WebSocket server available at ws://localhost:${PORT}/ws`);
+  // Load ccxt and start polling only after server is listening (do not block startup)
+  initExchanges()
+    .then(() => {
+      setInterval(pollKraken, KRAKEN_POLL_INTERVAL);
+      pollKraken();
+      setInterval(pollAndBroadcastMarkets, 2000);
+      pollAndBroadcastMarkets();
+    })
+    .catch((err) => console.error("Failed to init exchanges:", err));
 });
